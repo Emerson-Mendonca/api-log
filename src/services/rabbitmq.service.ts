@@ -10,21 +10,21 @@ export class RabbitMQService {
   private deadLetterChannel: any = null;
   private processingMessages: Map<string, any> = new Map();
 
-async initialize(): Promise<void> {
+  async initialize(): Promise<void> {
     try {
       // Inicializar conexão e canais principais (códigos existentes)
       this.connection = await amqp.connect(rabbitmqConfig.url);
-      
+
       // Configurar canal de consumo
       this.consumeChannel = await this.connection.createChannel();
-      
+
       // Configurar dead letter exchange se configurado
       if (rabbitmqConfig.deadLetterQueue) {
         const deadLetterExchange = 'dead.letter.exchange';
-        
+
         // Configurar canal para mensagens mortas
         this.deadLetterChannel = await this.connection.createChannel();
-        
+
         // Declarar exchange e fila para mensagens mortas
         await this.deadLetterChannel.assertExchange(deadLetterExchange, 'direct', { durable: true });
         await this.deadLetterChannel.assertQueue(rabbitmqConfig.deadLetterQueue, { durable: true });
@@ -33,9 +33,9 @@ async initialize(): Promise<void> {
           deadLetterExchange,
           'dead.letter.routing.key'
         );
-        
+
         // Configurar fila principal com dead letter exchange
-        await this.consumeChannel.assertQueue(rabbitmqConfig.queueToConsume, { 
+        await this.consumeChannel.assertQueue(rabbitmqConfig.queueToConsume, {
           durable: true,
           arguments: {
             'x-dead-letter-exchange': deadLetterExchange,
@@ -46,21 +46,21 @@ async initialize(): Promise<void> {
         // Configuração padrão sem dead letter
         await this.consumeChannel.assertQueue(rabbitmqConfig.queueToConsume, { durable: true });
       }
-      
+
       await this.consumeChannel.prefetch(rabbitmqConfig.prefetch);
-      
+
       // Configurar canal de publicação
       this.publishChannel = await this.connection.createChannel();
       await this.publishChannel.assertQueue(rabbitmqConfig.queueToPublish, { durable: true });
-      
+
       console.log('Conexão com RabbitMQ estabelecida');
-      
+
       // Setup eventos de reconexão (código existente)
       this.connection.on('error', (err: Error) => {
         console.error('Erro na conexão RabbitMQ:', err);
         this.reconnect();
       });
-      
+
       this.connection.on('close', () => {
         console.log('Conexão RabbitMQ fechada, tentando reconectar...');
         this.reconnect();
@@ -96,8 +96,9 @@ async initialize(): Promise<void> {
             const content = JSON.parse(msg.content.toString());
             const message: Message = {
               id: content.id || `msg-${Date.now()}`,
-              content,
-              timestamp: Date.now()
+              content: content.content,
+              timestamp: content.timestamp,
+              updateTimestamp: content.updateTimestamp || Date.now()
             };
 
             await messageHandler(message);
@@ -115,14 +116,14 @@ async initialize(): Promise<void> {
     console.log(`Consumindo mensagens da fila: ${rabbitmqConfig.queueToConsume}`);
   }
 
-  async publishMessage(message: Message): Promise<void> {
+  async publishMessage(message: Message, fila: String): Promise<void> {
     if (!this.publishChannel) {
       throw new Error('Canal de publicação não inicializado');
     }
 
     try {
       await this.publishChannel.sendToQueue(
-        rabbitmqConfig.queueToPublish,
+        fila,
         Buffer.from(JSON.stringify(message)),
         { persistent: true }
       );
@@ -142,12 +143,11 @@ async initialize(): Promise<void> {
       console.error('Erro ao fechar conexão RabbitMQ:', error);
     }
   }
-
   /**
-   * Obtém um conjunto de mensagens da fila para processamento em lote
-   * @param maxMessages Número máximo de mensagens para obter
-   */
-  async getMessagesFromQueue(maxMessages: number = 10): Promise<Message[]> {
+     * Obtém um conjunto de mensagens da fila para processamento em lote
+     * @param maxMessages Número máximo de mensagens para obter
+     */
+  async getMessagesFromQueue(maxMessages: number = 20, fila: String): Promise<Message[]> {
     if (!this.consumeChannel) {
       await this.initialize();
       if (!this.consumeChannel) {
@@ -156,37 +156,34 @@ async initialize(): Promise<void> {
     }
 
     const messages: Message[] = [];
-    
+
+    await this.consumeChannel.prefetch(maxMessages);
+
     for (let i = 0; i < maxMessages; i++) {
       try {
         // Método get do canal para obter uma mensagem única (sem consumo contínuo)
-        const msg = await this.consumeChannel.get(rabbitmqConfig.queueToConsume, { noAck: false });
-        
+        const msg = await this.consumeChannel.get(fila, { noAck: false });
+
         if (!msg) {
-          // Não há mais mensagens na fila
+          console.log(`Obtidas ${messages.length} mensagens, não há mais mensagens na fila`);
           break;
         }
-        
+
         const content = JSON.parse(msg.content.toString());
         const messageId = content.id || `msg-${Date.now()}-${i}`;
-        
-        const message: Message = {
-          id: messageId,
-          content,
-          timestamp: Date.now()
-        };
-        
-        // Armazenar a referência da mensagem original para confirmação posterior
+
+
+        content.updateTimestamp || Date.now()
+
         this.processingMessages.set(messageId, msg);
-        
-        messages.push(message);
+
+        messages.push(content);
       } catch (error) {
         console.error('Erro ao obter mensagem da fila:', error);
-        // Se houver erro, interrompe o loop para não continuar tentando
         break;
       }
     }
-    
+
     return messages;
   }
 
@@ -198,13 +195,13 @@ async initialize(): Promise<void> {
     if (!this.consumeChannel) {
       throw new Error('Canal de consumo não inicializado');
     }
-    
+
     const originalMessage = this.processingMessages.get(messageId);
     if (!originalMessage) {
       console.warn(`Mensagem ${messageId} não encontrada para confirmação`);
       return false;
     }
-    
+
     try {
       this.consumeChannel.ack(originalMessage);
       this.processingMessages.delete(messageId);
@@ -224,13 +221,13 @@ async initialize(): Promise<void> {
     if (!this.consumeChannel) {
       throw new Error('Canal de consumo não inicializado');
     }
-    
+
     const originalMessage = this.processingMessages.get(messageId);
     if (!originalMessage) {
       console.warn(`Mensagem ${messageId} não encontrada para rejeição`);
       return false;
     }
-    
+
     try {
       // Se não for para recolocar na fila e temos um canal para dead letter
       if (!requeue && this.deadLetterChannel) {
@@ -248,7 +245,7 @@ async initialize(): Promise<void> {
           { persistent: true }
         );
       }
-      
+
       // Rejeitar a mensagem original
       this.consumeChannel.nack(originalMessage, false, requeue);
       this.processingMessages.delete(messageId);
@@ -267,15 +264,17 @@ async initialize(): Promise<void> {
       if (!this.connection || !this.consumeChannel || !this.publishChannel) {
         return false;
       }
-      
+
       // Tentar obter informações da fila para verificar conectividade
       await this.consumeChannel.checkQueue(rabbitmqConfig.queueToConsume);
       await this.publishChannel.checkQueue(rabbitmqConfig.queueToPublish);
-      
+
       return true;
     } catch (error) {
       console.error('Erro na verificação de saúde do RabbitMQ:', error);
       return false;
     }
   }
+
+
 }

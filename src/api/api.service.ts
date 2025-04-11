@@ -1,10 +1,10 @@
-import express, { Express } from 'express';
 import cors from 'cors';
+import express, { Express } from 'express';
 import helmet from 'helmet';
 import { apiConfig } from '../config/api.config';
 import { errorHandler } from '../middlewares/error.middleware';
-import { RabbitMQService } from '../services/rabbitmq.service';
 import { createMessageRoutes } from '../routes/message.routes';
+import { RabbitMQService } from '../services/rabbitmq.service';
 
 export class ApiService {
   private app: Express;

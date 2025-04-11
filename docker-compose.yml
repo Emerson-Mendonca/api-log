@@ -18,9 +18,9 @@ services:
       - RABBITMQ_QUEUE_CONSUME=input_queue
       - RABBITMQ_QUEUE_PUBLISH=output_queue
       - ELASTICSEARCH_NODE=http://elasticsearch:9200
-      - ELASTICSEARCH_INDEX=data_index
+      - ELASTICSEARCH_INDEX=data-index
       - RABBITMQ_PROCESSING_SCHEDULE=*/1 * * * *
-      - RABBITMQ_DEAD_LETTER_QUEUE=input_queue
+      - RABBITMQ_DEAD_LETTER_QUEUE=dead_letter_queue
       - RABBITMQ_PREFETCH=10
     depends_on:
       - rabbitmq

@@ -30,13 +30,11 @@ export class Application {
       // Inicializar serviços
       await this.elasticsearchService.initialize();
       await this.rabbitmqService.initialize();
-      
-      // Configurar consumidor de mensagens (opcional, pode manter ou remover)
-      await this.rabbitmqService.consumeMessages(
-        this.messageHandler.handleMessage.bind(this.messageHandler)
-      );
-      
+    
       // Iniciar serviço de cron
+
+      this.cronService.startContinuousProcessing();
+
       // Processar a fila a cada minuto
       this.cronService.startQueueProcessingJob('*/1 * * * *');
       // Verificar saúde dos serviços a cada 5 minutos

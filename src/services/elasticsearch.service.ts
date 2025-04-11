@@ -59,8 +59,6 @@ export class ElasticsearchService {
   async checkHealth(): Promise<boolean> {
     try {
       const healthResponse = await this.client.cluster.health();
-      
-      // Verificar se o status não está vermelho (o que indica problemas sérios)
       return healthResponse.status !== 'red';
     } catch (error) {
       console.error('Erro na verificação de saúde do Elasticsearch:', error);

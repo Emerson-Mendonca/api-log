@@ -1,8 +1,9 @@
-import { Request, Response, NextFunction } from 'express';
-import { RabbitMQService } from '../services/rabbitmq.service';
+import { NextFunction, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { Message } from '../models/message.model';
+import { rabbitmqConfig } from '../config/rabbitmq.config';
 import { ApiError } from '../middlewares/error.middleware';
+import { Message } from '../models/message.model';
+import { RabbitMQService } from '../services/rabbitmq.service';
 
 export class MessageController {
   private rabbitmqService: RabbitMQService;
@@ -26,11 +27,12 @@ export class MessageController {
       const message: Message = {
         id: payload.id || uuidv4(),
         content: payload,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        updateTimestamp: Date.now()
       };
       
       // Publicar na fila do RabbitMQ
-      await this.rabbitmqService.publishMessage(message);
+      await this.rabbitmqService.publishMessage(message, rabbitmqConfig.queueToPublish);
       
       // Responder ao cliente
       res.status(202).json({

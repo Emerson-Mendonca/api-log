@@ -1,9 +1,9 @@
 // src/services/cron.service.ts
 import cron from 'node-cron';
-import { RabbitMQService } from './rabbitmq.service';
-import { ElasticsearchService } from './elasticsearch.service';
+import { rabbitmqConfig } from '../config/rabbitmq.config';
 import { Message } from '../models/message.model';
-import { v4 as uuidv4 } from 'uuid';
+import { ElasticsearchService } from './elasticsearch.service';
+import { RabbitMQService } from './rabbitmq.service';
 
 export class CronService {
   private rabbitmqService: RabbitMQService;
@@ -24,9 +24,6 @@ export class CronService {
    */
   startQueueProcessingJob(schedule: string = '* * * * *'): void {
     const job = cron.schedule(schedule, async () => {
-      console.log(`[${new Date().toISOString()}] Iniciando transferência entre filas`);
-      await this.transferQueueMessages(20)
-
       console.log(`[${new Date().toISOString()}] Iniciando processamento de fila para Elasticsearch`);
       await this.processQueueToElasticsearch();
     });
@@ -41,7 +38,7 @@ export class CronService {
   async processQueueToElasticsearch(): Promise<void> {
     try {
       // Obtém mensagens da fila de entrada usando um método modificado do RabbitMQService
-      const messages = await this.rabbitmqService.getMessagesFromQueue(10); // limita a 10 mensagens por vez
+      const messages = await this.rabbitmqService.getMessagesFromQueue(20, rabbitmqConfig.queueToConsume);
 
       if (messages.length === 0) {
         console.log('Nenhuma mensagem na fila para processar');
@@ -55,15 +52,6 @@ export class CronService {
         try {
           // Indexa no Elasticsearch
           await this.elasticsearchService.indexMessage(message);
-
-          // Opcionalmente, envie para a fila de saída indicando que foi processado
-          const processedMessage: Message = {
-            ...message,
-            processed: true,
-            processedAt: Date.now()
-          };
-
-          await this.rabbitmqService.publishMessage(processedMessage);
 
           // Confirma o processamento da mensagem original
           await this.rabbitmqService.acknowledgeMessage(message.id);
@@ -117,42 +105,6 @@ export class CronService {
     console.log(`Job de heartbeat configurado: ${schedule}`);
   }
 
-  // Função para transferir mensagens entre filas usando o CronService
-  async transferQueueMessages(batchSize: number = 10): Promise<void> {
-    try {
-      // Obtém mensagens da fila de entrada (RABBITMQ_QUEUE_CONSUME)
-      const messages = await this.rabbitmqService.getMessagesFromQueue(batchSize);
-
-      if (messages.length === 0) {
-        console.log('Nenhuma mensagem na fila de origem para transferir');
-        return;
-      }
-
-      console.log(`Transferindo ${messages.length} mensagens entre filas`);
-
-      // Processa cada mensagem e transfere para a fila de destino
-      for (const message of messages) {
-        try {
-          // Publica na fila de destino (RABBITMQ_QUEUE_PUBLISH)
-          await this.rabbitmqService.publishMessage(message);
-
-          // Confirma o processamento da mensagem na fila de origem
-          await this.rabbitmqService.acknowledgeMessage(message.id);
-
-          console.log(`Mensagem ${message.id} transferida com sucesso`);
-        } catch (error) {
-          console.error(`Erro ao transferir mensagem ${message.id}:`, error);
-          // Se falhar, rejeitamos a mensagem
-          await this.rabbitmqService.rejectMessage(message.id);
-        }
-      }
-
-      console.log(`Transferência de lote concluída: ${messages.length} mensagens`);
-    } catch (error) {
-      console.error('Erro ao transferir mensagens entre filas:', error);
-    }
-  }
-
   /**
    * Para todos os jobs de cron
    */
@@ -160,5 +112,91 @@ export class CronService {
     this.cronJobs.forEach(job => job.stop());
     this.cronJobs = [];
     console.log('Todos os jobs de cron foram interrompidos');
+  }
+
+
+  /**
+   * Processa todas as mensagens continuamente em vez de usar um job cron
+   * Esta função roda em loop contínuo até ser interrompida
+   */
+  async processAllMessages(): Promise<void> {
+    console.log(`[${new Date().toISOString()}] Iniciando processamento contínuo de mensagens`);
+
+    // Indica se o processamento está ativo
+    let isProcessing = true;
+
+    // Manipulador para SIGINT e SIGTERM para parar graciosamente
+    const shutdown = () => {
+      console.log('Recebido sinal de desligamento, finalizando processamento...');
+      isProcessing = false;
+    };
+
+    // Registra handlers para sinais de término
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    // Loop de processamento contínuo
+    while (isProcessing) {
+      try {
+        // Obtém até 20 mensagens por vez
+        const messages = await this.rabbitmqService.getMessagesFromQueue(20, rabbitmqConfig.queueToPublish);
+
+        if (messages.length === 0) {
+          console.log('Nenhuma mensagem para processar, aguardando 5 segundos...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+
+        console.log(`Processando lote de ${messages.length} mensagens`);
+
+        let successCount = 0;
+        let errorCount = 0;
+
+        // Processa em sub-lotes para melhor gerenciamento de memória
+        const subBatchSize = 20;
+        for (let i = 0; i < messages.length; i += subBatchSize) {
+          const subBatch = messages.slice(i, i + subBatchSize);
+
+          // Processa o sub-lote
+          await Promise.all(subBatch.map(async (message) => {
+            try {
+              // Publica na fila de destino
+              await this.rabbitmqService.publishMessage(message,rabbitmqConfig.queueToConsume);
+
+              // Confirma o processamento da mensagem na fila de origem
+              await this.rabbitmqService.acknowledgeMessage(message.id);
+
+              successCount++;
+            } catch (error) {
+              console.error(`Erro ao transferir mensagem ${message.id}:`, error);
+              await this.rabbitmqService.rejectMessage(message.id, false);
+              errorCount++;
+            }
+          }));
+
+          // Log de progresso
+          console.log(`Progresso: ${i + subBatch.length}/${messages.length} mensagens`);
+        }
+
+        console.log(`Lote processado: ${successCount} sucesso, ${errorCount} falhas`);
+      } catch (error) {
+        console.error('Erro no loop de processamento:', error);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+
+    console.log('Processamento contínuo finalizado');
+  }
+
+  /**
+   * Inicia o processamento contínuo como um processo em background
+   */
+  startContinuousProcessing(): void {
+    // Executa o processamento em uma promise separada
+    this.processAllMessages().catch(error => {
+      console.error('Erro no processamento contínuo:', error);
+    });
+
+    console.log('Processamento contínuo iniciado');
   }
 }
