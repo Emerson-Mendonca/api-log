@@ -1,0 +1,22 @@
+# Arquivos e diretórios que não devem ser copiados para a imagem Docker
+node_modules
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.git
+.github
+.vscode
+dist
+.env
+.env.*
+*.md
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+.gitignore
+coverage
+tests
+**/*.test.ts
+**/*.spec.ts
+**/__tests__/*
+**/__mocks__/*

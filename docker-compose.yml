@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Aplicação Node.js
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: node-rabbitmq-es-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - API_PORT=3000
+      - API_HOST=0.0.0.0
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_QUEUE_CONSUME=input_queue
+      - RABBITMQ_QUEUE_PUBLISH=output_queue
+      - ELASTICSEARCH_NODE=http://elasticsearch:9200
+      - ELASTICSEARCH_INDEX=data_index
+      - RABBITMQ_PROCESSING_SCHEDULE=*/1 * * * *
+      - RABBITMQ_DEAD_LETTER_QUEUE=input_queue
+      - RABBITMQ_PREFETCH=10
+    depends_on:
+      - rabbitmq
+      - elasticsearch
+    networks:
+      - app-network
+
+  # Serviço RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # Porta AMQP
+      - "15672:15672" # Interface de gerenciamento
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - app-network
+
+  # Serviço Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: elasticsearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - app-network
+    # Serviço Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.2
+    container_name: kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_HOST=0.0.0.0
+    depends_on:
+      - elasticsearch
+    networks:
+      - app-network
+
+# Volumes para persistência de dados
+volumes:
+  rabbitmq_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+
+# Rede dedicada para comunicação entre os serviços
+networks:
+  app-network:
+    driver: bridge
